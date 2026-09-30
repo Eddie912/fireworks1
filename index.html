@@ -78,6 +78,182 @@
   <p class="hint" aria-hidden="true">移动或点击，让心跳回应你</p>
   <p id="fallback" hidden>当前浏览器无法显示爱心动画。</p>
   <p id="description" class="sr-only">装饰性粒子爱心动画。画面中的粒子会汇聚成爱心并轻柔跳动。</p>
-  <script></script>
+  <script>
+    (() => {
+      'use strict';
+
+      const TAU = Math.PI * 2;
+      const canvas = document.getElementById('heartCanvas');
+      const fallback = document.getElementById('fallback');
+      const context = canvas?.getContext('2d');
+      const state = {
+        width: 0,
+        height: 0,
+        particles: [],
+        startedAt: 0,
+        lastTime: 0,
+        rafId: 0,
+      };
+
+      function clamp(value, minimum, maximum) {
+        return Math.min(maximum, Math.max(minimum, value));
+      }
+
+      function createHeartPoints(width, height, count = 700) {
+        const pointCount = Math.max(1, Math.round(count));
+        const scale = Math.min(width * 0.34, height * 0.38, 360) / 16;
+        const centerX = width / 2;
+        const centerY = height / 2;
+
+        return Array.from({ length: pointCount }, (_, index) => {
+          const angle = index / pointCount * TAU;
+          const radius = index % 5 < 3
+            ? 1
+            : Math.sqrt(Math.random()) * 0.86;
+          const heartX = 16 * Math.sin(angle) ** 3;
+          const heartY = 13 * Math.cos(angle)
+            - 5 * Math.cos(angle * 2)
+            - 2 * Math.cos(angle * 3)
+            - Math.cos(angle * 4);
+
+          return {
+            x: centerX + heartX * scale * radius,
+            y: centerY - heartY * scale * radius,
+          };
+        });
+      }
+
+      function createParticles(points, width, height) {
+        const colors = [
+          '255, 74, 128',
+          '255, 126, 151',
+          '255, 211, 224',
+          '255, 171, 96',
+        ];
+
+        return points.map((point, index) => ({
+          x: Math.random() * width,
+          y: Math.random() * height,
+          tx: point.x,
+          ty: point.y,
+          vx: 0,
+          vy: 0,
+          phase: Math.random() * TAU,
+          speed: 0.72 + Math.random() * 0.72,
+          size: 0.65 + Math.random() * 1.65,
+          color: colors[index % colors.length],
+          alpha: 0.4 + Math.random() * 0.6,
+        }));
+      }
+
+      function resizeCanvas() {
+        if (!canvas || !context) {
+          return;
+        }
+
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const bounds = canvas.getBoundingClientRect();
+        const width = Math.max(1, bounds.width);
+        const height = Math.max(1, bounds.height);
+        const area = width * height;
+        const count = area < 240000
+          ? Math.max(220, Math.round(area / 900))
+          : Math.round(clamp(area / 1850, 420, 700));
+
+        state.width = width;
+        state.height = height;
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+        context.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        const points = createHeartPoints(width, height, count);
+        state.particles = createParticles(points, width, height);
+      }
+
+      function heartBeat(time) {
+        const phase = (time * 1.18) % 1;
+        const firstBeat = Math.exp(-Math.pow((phase - 0.09) / 0.075, 2));
+        const secondBeat = 0.48 * Math.exp(-Math.pow((phase - 0.28) / 0.095, 2));
+        return firstBeat + secondBeat;
+      }
+
+      function updateParticle(particle, time, delta = 1 / 60) {
+        const frameScale = clamp(delta * 60, 0.2, 2.4);
+        const elapsed = time - state.startedAt || 0;
+        const gatherProgress = clamp(elapsed / 6.2, 0, 1);
+        const beat = heartBeat(time) * gatherProgress * 0.018;
+        const centerX = state.width / 2;
+        const centerY = state.height / 2;
+        const targetX = particle.tx + (particle.tx - centerX) * beat;
+        const targetY = particle.ty + (particle.ty - centerY) * beat;
+        const drift = Math.sin(time * particle.speed + particle.phase) * 0.12;
+        const pull = 0.0075 * frameScale * (0.62 + gatherProgress * 0.38);
+
+        particle.vx += (targetX - particle.x) * pull + drift * 0.006;
+        particle.vy += (targetY - particle.y) * pull + Math.cos(time * particle.speed + particle.phase) * 0.006;
+        particle.vx *= Math.pow(0.922, frameScale);
+        particle.vy *= Math.pow(0.922, frameScale);
+        particle.x += particle.vx * frameScale;
+        particle.y += particle.vy * frameScale;
+      }
+
+      function drawParticle(particle, time) {
+        const pulse = 0.78 + Math.sin(time * 1.9 + particle.phase) * 0.22;
+        const alpha = particle.alpha * pulse;
+        const radius = particle.size * (0.85 + pulse * 0.3);
+
+        context.fillStyle = `rgba(${particle.color}, ${alpha * 0.1})`;
+        context.beginPath();
+        context.arc(particle.x, particle.y, radius * 3.5, 0, TAU);
+        context.fill();
+
+        context.fillStyle = `rgba(${particle.color}, ${alpha})`;
+        context.beginPath();
+        context.arc(particle.x, particle.y, radius, 0, TAU);
+        context.fill();
+      }
+
+      function render(now) {
+        if (!context) {
+          return;
+        }
+
+        if (!state.startedAt) {
+          state.startedAt = now;
+          state.lastTime = now;
+        }
+
+        const time = (now - state.startedAt) / 1000;
+        const delta = Math.min((now - state.lastTime) / 1000 || 1 / 60, 0.05);
+        state.lastTime = now;
+        context.clearRect(0, 0, state.width, state.height);
+        context.save();
+        context.globalCompositeOperation = 'lighter';
+
+        for (const particle of state.particles) {
+          updateParticle(particle, time, delta);
+          drawParticle(particle, time);
+        }
+
+        context.restore();
+        state.rafId = requestAnimationFrame(render);
+      }
+
+      if (!context) {
+        canvas?.setAttribute('hidden', '');
+        fallback?.removeAttribute('hidden');
+      } else {
+        resizeCanvas();
+        requestAnimationFrame(render);
+      }
+
+      window.__heartAnimation = {
+        createHeartPoints,
+        createParticles,
+        updateParticle,
+        getState: () => state,
+      };
+    })();
+  </script>
 </body>
 </html>
