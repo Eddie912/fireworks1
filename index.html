@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <link rel="icon" href="data:,">
   <title>粒子心跳</title>
   <style>
     :root {
@@ -86,6 +87,7 @@
       const canvas = document.getElementById('heartCanvas');
       const fallback = document.getElementById('fallback');
       const context = canvas?.getContext('2d');
+      const motionQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)');
       const state = {
         width: 0,
         height: 0,
@@ -93,7 +95,10 @@
         startedAt: 0,
         lastTime: 0,
         rafId: 0,
+        reducedMotion: Boolean(motionQuery?.matches),
+        pointer: { x: 0, y: 0, active: false },
       };
+      let resizeFrame = 0;
 
       function clamp(value, minimum, maximum) {
         return Math.min(maximum, Math.max(minimum, value));
@@ -193,6 +198,19 @@
         particle.vy += (targetY - particle.y) * pull + Math.cos(time * particle.speed + particle.phase) * 0.006;
         particle.vx *= Math.pow(0.922, frameScale);
         particle.vy *= Math.pow(0.922, frameScale);
+
+        if (state.pointer.active) {
+          const pointerX = particle.x - state.pointer.x;
+          const pointerY = particle.y - state.pointer.y;
+          const pointerDistance = Math.hypot(pointerX, pointerY);
+
+          if (pointerDistance > 0 && pointerDistance < 120) {
+            const force = (1 - pointerDistance / 120) * 2.4;
+            particle.vx += pointerX / pointerDistance * force;
+            particle.vy += pointerY / pointerDistance * force;
+          }
+        }
+
         particle.x += particle.vx * frameScale;
         particle.y += particle.vy * frameScale;
       }
@@ -213,8 +231,58 @@
         context.fill();
       }
 
+      function drawFrame(time) {
+        context.clearRect(0, 0, state.width, state.height);
+        context.save();
+        context.globalCompositeOperation = 'lighter';
+
+        for (const particle of state.particles) {
+          drawParticle(particle, time);
+        }
+
+        context.restore();
+      }
+
+      function drawReducedMotionFrame() {
+        for (const particle of state.particles) {
+          particle.x = particle.tx;
+          particle.y = particle.ty;
+          particle.vx = 0;
+          particle.vy = 0;
+        }
+
+        drawFrame(0);
+      }
+
+      function stopAnimation() {
+        if (state.rafId) {
+          cancelAnimationFrame(state.rafId);
+          state.rafId = 0;
+        }
+      }
+
+      function startAnimation() {
+        if (state.reducedMotion || state.rafId) {
+          return;
+        }
+
+        if (!state.startedAt) {
+          state.startedAt = performance.now();
+          state.lastTime = state.startedAt;
+        }
+
+        state.rafId = requestAnimationFrame(render);
+      }
+
       function render(now) {
         if (!context) {
+          return;
+        }
+
+        state.rafId = 0;
+
+        if (state.reducedMotion) {
+          drawReducedMotionFrame();
           return;
         }
 
@@ -226,17 +294,64 @@
         const time = (now - state.startedAt) / 1000;
         const delta = Math.min((now - state.lastTime) / 1000 || 1 / 60, 0.05);
         state.lastTime = now;
-        context.clearRect(0, 0, state.width, state.height);
-        context.save();
-        context.globalCompositeOperation = 'lighter';
 
         for (const particle of state.particles) {
           updateParticle(particle, time, delta);
-          drawParticle(particle, time);
         }
 
-        context.restore();
+        drawFrame(time);
         state.rafId = requestAnimationFrame(render);
+      }
+
+      function burstAt(x, y) {
+        if (state.reducedMotion) {
+          return;
+        }
+
+        state.pointer.x = x;
+        state.pointer.y = y;
+        state.pointer.active = true;
+
+        for (const particle of state.particles) {
+          const dx = particle.x - x;
+          const dy = particle.y - y;
+          const distance = Math.hypot(dx, dy) || 1;
+          const impulse = 4.5 + Math.random() * 5.5;
+          particle.vx += dx / distance * impulse;
+          particle.vy += dy / distance * impulse;
+        }
+      }
+
+      function resetPointer() {
+        state.pointer.active = false;
+      }
+
+      function syncMotionPreference(event) {
+        state.reducedMotion = event.matches;
+        stopAnimation();
+
+        if (state.reducedMotion) {
+          drawReducedMotionFrame();
+        } else {
+          state.startedAt = performance.now();
+          state.lastTime = state.startedAt;
+          startAnimation();
+        }
+      }
+
+      function scheduleResize() {
+        if (resizeFrame) {
+          return;
+        }
+
+        resizeFrame = requestAnimationFrame(() => {
+          resizeFrame = 0;
+          resizeCanvas();
+
+          if (state.reducedMotion) {
+            drawReducedMotionFrame();
+          }
+        });
       }
 
       if (!context) {
@@ -244,13 +359,36 @@
         fallback?.removeAttribute('hidden');
       } else {
         resizeCanvas();
-        requestAnimationFrame(render);
+
+        window.addEventListener?.('pointermove', (event) => {
+          state.pointer.x = event.clientX;
+          state.pointer.y = event.clientY;
+          state.pointer.active = true;
+        }, { passive: true });
+        window.addEventListener?.('pointerleave', resetPointer);
+        window.addEventListener?.('pointerdown', (event) => {
+          burstAt(event.clientX, event.clientY);
+        }, { passive: true });
+        window.addEventListener?.('resize', scheduleResize, { passive: true });
+
+        if (motionQuery?.addEventListener) {
+          motionQuery.addEventListener('change', syncMotionPreference);
+        } else {
+          motionQuery?.addListener?.(syncMotionPreference);
+        }
+
+        if (state.reducedMotion) {
+          drawReducedMotionFrame();
+        } else {
+          startAnimation();
+        }
       }
 
       window.__heartAnimation = {
         createHeartPoints,
         createParticles,
         updateParticle,
+        burstAt,
         getState: () => state,
       };
     })();
